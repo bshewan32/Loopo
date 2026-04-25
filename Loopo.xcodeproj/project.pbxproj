@@ -10,9 +10,34 @@
 		964224AA2F947B2B00C26AA5 /* Loopo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Loopo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		964224D32F947DDD00C26AA5 /* Exceptions for "Loopo" folder in "Loopo" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Extensions/Color+Hex.swift",
+				Info.plist,
+			);
+			target = 964224A92F947B2B00C26AA5 /* Loopo */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		964224D42F947DDD00C26AA5 /* Exceptions for "Loopo" folder in "Copy Bundle Resources" phase from "Loopo" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 964224A82F947B2B00C26AA5 /* Resources */;
+			membershipExceptions = (
+				"Extensions/Color+Hex.swift",
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		964224AC2F947B2B00C26AA5 /* Loopo */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				964224D32F947DDD00C26AA5 /* Exceptions for "Loopo" folder in "Loopo" target */,
+				964224D42F947DDD00C26AA5 /* Exceptions for "Loopo" folder in "Copy Bundle Resources" phase from "Loopo" target */,
+			);
 			path = Loopo;
 			sourceTree = "<group>";
 		};
@@ -256,6 +281,10 @@
 				DEVELOPMENT_TEAM = UT8Q8N63UM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Loopo/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = " \"Loopo uses your location in the background to track your full ride route.\"";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "\"Loopo needs your location to track your ride and generate routes from your position.\"";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -288,6 +317,10 @@
 				DEVELOPMENT_TEAM = UT8Q8N63UM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Loopo/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = " \"Loopo uses your location in the background to track your full ride route.\"";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "\"Loopo needs your location to track your ride and generate routes from your position.\"";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
