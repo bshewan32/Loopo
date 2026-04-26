@@ -5,7 +5,6 @@
 //  Created by Bill Shewan on 19/4/2026.
 //
 
-
 import Foundation
 import CoreLocation
 import MapKit
@@ -15,11 +14,9 @@ import Combine
 class RoutePlannerViewModel: ObservableObject {
     
     // MARK: - User inputs
-    @Published var destinationText: String = ""
-    @Published var destinationCoordinate: CLLocationCoordinate2D?
-    @Published var destinationName: String = ""
     @Published var targetDistanceKm: Double = 60
     @Published var selectedTerrain: TerrainProfile = .mostlyFlat
+    @Published var selectedDirection: RouteDirection = .any
     
     // MARK: - Generated routes
     @Published var generatedRoutes: [GeneratedRoute] = []
@@ -28,57 +25,10 @@ class RoutePlannerViewModel: ObservableObject {
     // MARK: - UI state
     @Published var isGenerating: Bool = false
     @Published var errorMessage: String?
-    @Published var searchResults: [MKMapItem] = []
-    @Published var isSearching: Bool = false
-    
-    private var searchTask: Task<Void, Never>?
-    
-    // MARK: - Destination search
-    
-    func searchDestination(_ query: String) {
-        guard query.count > 2 else {
-            searchResults = []
-            return
-        }
-        
-        searchTask?.cancel()
-        searchTask = Task {
-            isSearching = true
-            let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = query
-            
-            // Bias to Geelong / Victoria region
-            let center = CLLocationCoordinate2D(latitude: -38.1499, longitude: 144.3617)
-            let span   = MKCoordinateSpan(latitudeDelta: 3.0, longitudeDelta: 3.0)
-            request.region = MKCoordinateRegion(center: center, span: span)
-            
-            let search = MKLocalSearch(request: request)
-            if let response = try? await search.start() {
-                if !Task.isCancelled {
-                    searchResults = response.mapItems
-                    isSearching = false
-                }
-            } else {
-                isSearching = false
-            }
-        }
-    }
-    
-    func selectDestination(_ mapItem: MKMapItem) {
-        destinationCoordinate = mapItem.placemark.coordinate
-        destinationName = mapItem.name ?? mapItem.placemark.title ?? "Destination"
-        destinationText = destinationName
-        searchResults = []
-    }
     
     // MARK: - Route generation
     
     func generateRoutes(from userLocation: CLLocationCoordinate2D) async {
-        guard let destination = destinationCoordinate else {
-            errorMessage = "Please select a destination first."
-            return
-        }
-        
         isGenerating = true
         errorMessage = nil
         generatedRoutes = []
@@ -87,9 +37,9 @@ class RoutePlannerViewModel: ObservableObject {
         do {
             let routes = try await RouteGenerationService.shared.generateRoutes(
                 from: userLocation,
-                destination: destination,
                 targetDistanceKm: targetDistanceKm,
-                terrain: selectedTerrain
+                terrain: selectedTerrain,
+                heading: selectedDirection.heading
             )
             generatedRoutes = routes
             selectedRoute   = routes.first
@@ -106,3 +56,36 @@ class RoutePlannerViewModel: ObservableObject {
         String(format: "%.0f km", targetDistanceKm)
     }
 }
+
+// MARK: - Route Direction
+
+enum RouteDirection: String, CaseIterable, Identifiable {
+    case any = "Any"
+    case north = "North"
+    case east = "East"
+    case south = "South"
+    case west = "West"
+    
+    var id: String { self.rawValue }
+    
+    var heading: Double? {
+        switch self {
+        case .any: return nil
+        case .north: return 0
+        case .east: return 90
+        case .south: return 180
+        case .west: return 270
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .any: return "arrow.up.and.down.and.arrow.left.and.right"
+        case .north: return "arrow.up"
+        case .east: return "arrow.right"
+        case .south: return "arrow.down"
+        case .west: return "arrow.left"
+        }
+    }
+}
+

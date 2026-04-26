@@ -5,7 +5,6 @@
 //  Created by Bill Shewan on 19/4/2026.
 //
 
-
 import SwiftUI
 import MapKit
 
@@ -27,19 +26,14 @@ struct PlanRouteView: View {
                         // Header
                         headerSection
                         
-                        // Destination
-                        destinationSection
-                        
-                        // Search results dropdown
-                        if !vm.searchResults.isEmpty {
-                            searchResultsList
-                        }
-                        
                         // Distance slider
                         distanceSection
                         
                         // Terrain picker
                         terrainSection
+                        
+                        // Direction picker
+                        directionSection
                         
                         // Generate button
                         generateButton
@@ -98,61 +92,6 @@ struct PlanRouteView: View {
         .padding(.top, 8)
     }
     
-    private var destinationSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("DESTINATION", systemImage: "mappin")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(Color("LoopGreen"))
-                .tracking(2)
-            
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.gray)
-                TextField("e.g. Torquay", text: $vm.destinationText)
-                    .foregroundColor(.white)
-                    .onChange(of: vm.destinationText) { _, newValue in
-                        vm.searchDestination(newValue)
-                    }
-                if vm.isSearching {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                }
-            }
-            .padding(14)
-            .background(Color("CardBackground"))
-            .cornerRadius(12)
-        }
-    }
-    
-    private var searchResultsList: some View {
-        VStack(spacing: 0) {
-            ForEach(vm.searchResults.prefix(5), id: \.self) { item in
-                Button {
-                    vm.selectDestination(item)
-                } label: {
-                    HStack {
-                        Image(systemName: "mappin.circle.fill")
-                            .foregroundColor(Color("LoopGreen"))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.name ?? "")
-                                .foregroundColor(.white)
-                                .font(.subheadline)
-                            Text(item.placemark.title ?? "")
-                                .foregroundColor(.gray)
-                                .font(.caption)
-                        }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                }
-                Divider().background(Color.gray.opacity(0.2))
-            }
-        }
-        .background(Color("CardBackground"))
-        .cornerRadius(12)
-    }
-    
     private var distanceSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -200,6 +139,26 @@ struct PlanRouteView: View {
         .cornerRadius(12)
     }
     
+    private var directionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("DIRECTION BIAS", systemImage: "location.north.line")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color("LoopGreen"))
+                .tracking(2)
+            
+            HStack(spacing: 8) {
+                ForEach(RouteDirection.allCases) { direction in
+                    DirectionChip(direction: direction, isSelected: vm.selectedDirection == direction) {
+                        vm.selectedDirection = direction
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color("CardBackground"))
+        .cornerRadius(12)
+    }
+    
     private var generateButton: some View {
         Button {
             Task {
@@ -227,7 +186,7 @@ struct PlanRouteView: View {
             .background(vm.isGenerating ? Color("LoopGreen").opacity(0.5) : Color("LoopGreen"))
             .cornerRadius(14)
         }
-        .disabled(vm.isGenerating || vm.destinationCoordinate == nil)
+        .disabled(vm.isGenerating)
     }
     
     private var routeResultsSection: some View {
@@ -301,6 +260,31 @@ struct TerrainChip: View {
     }
 }
 
+// MARK: - Direction Chip
+
+struct DirectionChip: View {
+    let direction: RouteDirection
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: direction.icon)
+                    .font(.system(size: 14))
+                Text(direction.rawValue)
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.5)
+            }
+            .foregroundColor(isSelected ? .black : .white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(isSelected ? Color("LoopGreen") : Color.gray.opacity(0.15))
+            .cornerRadius(10)
+        }
+    }
+}
+
 // MARK: - Route Card
 
 struct RouteCard: View {
@@ -328,15 +312,14 @@ struct RouteCard: View {
                     StatPill(icon: "clock", value: route.formattedDuration)
                 }
                 
-                // Mini map placeholder — replaced by MapKit snapshot in production
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.1))
-                    .frame(height: 80)
-                    .overlay(
-                        Text("Map preview")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    )
+                // Live Map Preview
+                Map {
+                    MapPolyline(route.polyline)
+                        .stroke(Color("LoopGreen"), lineWidth: 4)
+                }
+                .frame(height: 120)
+                .cornerRadius(8)
+                .disabled(true) // Disable interaction for preview
             }
             .padding(14)
             .background(
@@ -370,3 +353,4 @@ struct StatPill: View {
         .cornerRadius(6)
     }
 }
+
