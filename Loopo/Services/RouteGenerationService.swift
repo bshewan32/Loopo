@@ -35,13 +35,19 @@ class RouteGenerationService {
 
             print("🔄 Attempting route \(i + 1) with seed \(seed)...")
 
+            // Apply direction bias by offsetting the origin slightly in the
+            // requested compass direction. This is more reliable than the
+            // `heading` parameter, which is not supported by the round_trip
+            // algorithm on the GraphHopper free tier.
+            let biasedOrigin = heading.map { offsetOrigin(origin, heading: $0, distanceKm: targetDistanceKm * 0.08) }
+                               ?? origin
+
             do {
                 if let route = try await requestGraphHopperLoop(
-                    origin: origin,
+                    origin: biasedOrigin,
                     targetDistanceKm: targetDistanceKm,
                     terrain: terrain,
                     seed: seed,
-                    heading: heading,
                     index: i
                 ) {
                     print("✅ Route \(i + 1) generated successfully")
@@ -57,16 +63,16 @@ class RouteGenerationService {
         }
 
         guard !routes.isEmpty else {
-            let errorMessage = "Could not generate any valid routes. "
+            let base = "Could not generate any valid routes. "
             if let lastError = lastError {
                 throw NSError(
                     domain: "RouteGeneration", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: errorMessage + lastError.localizedDescription]
+                    userInfo: [NSLocalizedDescriptionKey: base + lastError.localizedDescription]
                 )
             } else {
                 throw NSError(
                     domain: "RouteGeneration", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: errorMessage + "Try adjusting the distance or location."]
+                    userInfo: [NSLocalizedDescriptionKey: base + "Try adjusting the distance or location."]
                 )
             }
         }
@@ -77,6 +83,37 @@ class RouteGenerationService {
         }
     }
 
+    // MARK: - Direction Bias Helper
+
+    /// Offsets a coordinate by `distanceKm` in the given compass `heading` (degrees, 0 = north).
+    /// This nudges GraphHopper's round_trip algorithm to extend the loop in the chosen direction
+    /// without using the `heading` query parameter, which is unsupported for round_trip routes.
+    private func offsetOrigin(
+        _ origin: CLLocationCoordinate2D,
+        heading: Double,
+        distanceKm: Double
+    ) -> CLLocationCoordinate2D {
+        let earthRadiusKm = 6371.0
+        let headingRad    = heading * .pi / 180
+        let distRad       = distanceKm / earthRadiusKm
+        let latRad        = origin.latitude  * .pi / 180
+        let lonRad        = origin.longitude * .pi / 180
+
+        let newLatRad = asin(
+            sin(latRad) * cos(distRad) +
+            cos(latRad) * sin(distRad) * cos(headingRad)
+        )
+        let newLonRad = lonRad + atan2(
+            sin(headingRad) * sin(distRad) * cos(latRad),
+            cos(distRad) - sin(latRad) * sin(newLatRad)
+        )
+
+        return CLLocationCoordinate2D(
+            latitude:  newLatRad * 180 / .pi,
+            longitude: newLonRad * 180 / .pi
+        )
+    }
+
     // MARK: - GraphHopper API Request
 
     private func requestGraphHopperLoop(
@@ -84,20 +121,19 @@ class RouteGenerationService {
         targetDistanceKm: Double,
         terrain: TerrainProfile,
         seed: Int,
-        heading: Double?,
         index: Int
     ) async throws -> GeneratedRoute? {
 
         var urlComponents = URLComponents(string: baseURL)!
 
-        // Map terrain profile to a GraphHopper cycling profile
-        let profile: String
-        switch terrain {
-        case .flat, .mostlyFlat:  profile = "bike"
-        case .hilly, .reallyHilly: profile = "mtb"
-        }
+        // All terrain profiles use the `bike` profile on the free tier.
+        // The `mtb` profile is a paid-tier feature and will return a 400/403.
+        // Terrain preference (hilly vs flat) is expressed through the scoring
+        // function which ranks returned routes by climb-per-km against the
+        // target terrain band.
+        let profile = "bike"
 
-        var queryItems: [URLQueryItem] = [
+        let queryItems: [URLQueryItem] = [
             URLQueryItem(name: "point",               value: "\(origin.latitude),\(origin.longitude)"),
             URLQueryItem(name: "profile",             value: profile),
             URLQueryItem(name: "algorithm",           value: "round_trip"),
@@ -108,12 +144,6 @@ class RouteGenerationService {
             URLQueryItem(name: "locale",              value: "en"),
             URLQueryItem(name: "key",                 value: apiKey),
         ]
-
-        // Directional bias requires disabling contraction hierarchies
-        if let heading = heading {
-            queryItems.append(URLQueryItem(name: "heading",    value: "\(Int(heading))"))
-            queryItems.append(URLQueryItem(name: "ch.disable", value: "true"))
-        }
 
         urlComponents.queryItems = queryItems
 
