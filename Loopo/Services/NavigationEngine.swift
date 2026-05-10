@@ -6,14 +6,15 @@
 //
 
 import Foundation
+import Combine
 import CoreLocation
+import MapKit
 import AVFoundation
 
 /// Drives turn-by-turn navigation for an active ride.
 ///
 /// Feed it GPS updates via `update(location:)` and observe the published
 /// properties to drive the instruction banner and audio announcements.
-@MainActor
 class NavigationEngine: ObservableObject {
 
     // MARK: - Published state (drives the UI)
@@ -60,7 +61,10 @@ class NavigationEngine: ObservableObject {
             repeating: CLLocationCoordinate2D(),
             count: route.polyline.pointCount
         )
-        route.polyline.getCoordinates(&coords, range: NSRange(location: 0, length: route.polyline.pointCount))
+        route.polyline.getCoordinates(
+            &coords,
+            range: NSRange(location: 0, length: route.polyline.pointCount)
+        )
         self.routeCoordinates = coords
 
         // Set the first instruction immediately so the banner is populated before movement
@@ -80,14 +84,14 @@ class NavigationEngine: ObservableObject {
 
         // --- 1. Check off-route ---
         let distanceToRoute = distanceToNearestRoutePoint(from: location)
-        isOffRoute = distanceToRoute > offRouteThresholdM
+        DispatchQueue.main.async { self.isOffRoute = distanceToRoute > self.offRouteThresholdM }
 
         // --- 2. Advance instruction index if close enough to the manoeuvre point ---
         let nextIndex = currentInstructionIndex + 1
         if nextIndex < instructions.count {
-            let nextInstruction = instructions[nextIndex]
-            let manoeuvreCoord  = routeCoordinates[safe: nextInstruction.pointIndex]
-                                  ?? routeCoordinates.last!
+            let nextInstruction   = instructions[nextIndex]
+            let manoeuvreCoord    = routeCoordinates[safe: nextInstruction.pointIndex]
+                                    ?? routeCoordinates[routeCoordinates.count - 1]
             let manoeuvreLocation = CLLocation(
                 latitude:  manoeuvreCoord.latitude,
                 longitude: manoeuvreCoord.longitude
@@ -95,35 +99,37 @@ class NavigationEngine: ObservableObject {
             let distToManoeuvre = location.distance(from: manoeuvreLocation)
 
             // Update the live distance counter
-            distanceToNextM = distToManoeuvre
+            DispatchQueue.main.async { self.distanceToNextM = distToManoeuvre }
 
             // "Prepare to turn" cue at ~200 m
             if distToManoeuvre <= prepareThresholdM && !prepareCueFired {
                 prepareCueFired = true
-                let prepareText = "In \(instructions[nextIndex].formattedDistance), \(instructions[nextIndex].text)"
+                let prepareText = "In \(nextInstruction.formattedDistance), \(nextInstruction.text)"
                 speak(prepareText)
             }
 
             // Advance when within the advance threshold
             if distToManoeuvre <= advanceThresholdM {
                 currentInstructionIndex = nextIndex
-                currentInstruction      = instructions[nextIndex]
                 prepareCueFired         = false
+                speak(nextInstruction.text)
 
-                // Speak the instruction immediately on arrival at the manoeuvre
-                speak(instructions[nextIndex].text)
+                DispatchQueue.main.async {
+                    self.currentInstruction = nextInstruction
 
-                // Check for arrival (GraphHopper sign 4 = destination reached)
-                if instructions[nextIndex].sign == 4 || instructions[nextIndex].sign == -4 {
-                    hasArrived = true
-                    speak("You have arrived. Great ride!")
+                    // Check for arrival (GraphHopper sign 4 = destination reached)
+                    if nextInstruction.sign == 4 || nextInstruction.sign == -4 {
+                        self.hasArrived = true
+                        self.speak("You have arrived. Great ride!")
+                    }
                 }
             }
         } else {
-            // Already on the last instruction — just update distance to end
+            // Already on the last instruction — update distance to route end
             if let last = routeCoordinates.last {
                 let endLocation = CLLocation(latitude: last.latitude, longitude: last.longitude)
-                distanceToNextM = location.distance(from: endLocation)
+                let d = location.distance(from: endLocation)
+                DispatchQueue.main.async { self.distanceToNextM = d }
             }
         }
     }
@@ -135,20 +141,20 @@ class NavigationEngine: ObservableObject {
         guard !routeCoordinates.isEmpty else { return 0 }
         return routeCoordinates
             .map { coord -> Double in
-                let pt = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-                return location.distance(from: pt)
+                CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+                    .distance(from: location)
             }
             .min() ?? 0
     }
 
     /// Speaks `text` aloud using AVSpeechSynthesizer, interrupting any current speech.
-    private func speak(_ text: String) {
+    func speak(_ text: String) {
         speechSynthesiser.stopSpeaking(at: .immediate)
-        let utterance          = AVSpeechUtterance(string: text)
-        utterance.voice        = AVSpeechSynthesisVoice(language: "en-AU")
-        utterance.rate         = 0.52   // Slightly slower than default for clarity at speed
+        let utterance             = AVSpeechUtterance(string: text)
+        utterance.voice           = AVSpeechSynthesisVoice(language: "en-AU")
+        utterance.rate            = 0.52
         utterance.pitchMultiplier = 1.0
-        utterance.volume       = 1.0
+        utterance.volume          = 1.0
         speechSynthesiser.speak(utterance)
     }
 }
