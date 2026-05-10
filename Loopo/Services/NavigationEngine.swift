@@ -49,6 +49,9 @@ class NavigationEngine: ObservableObject {
     /// Distance threshold (metres) beyond which the rider is considered off-route.
     private let offRouteThresholdM: Double = 80
 
+    /// Tracks whether we were off-route on the previous update, so we can detect the moment of re-join.
+    private var wasOffRoute: Bool = false
+
     private let speechSynthesiser = AVSpeechSynthesizer()
 
     // MARK: - Init
@@ -82,9 +85,20 @@ class NavigationEngine: ObservableObject {
 
         let instructions = route.instructions
 
-        // --- 1. Check off-route ---
+        // --- 1. Check off-route status ---
         let distanceToRoute = distanceToNearestRoutePoint(from: location)
-        DispatchQueue.main.async { self.isOffRoute = distanceToRoute > self.offRouteThresholdM }
+        let nowOffRoute = distanceToRoute > offRouteThresholdM
+
+        // Detect the moment the rider re-joins the route
+        if wasOffRoute && !nowOffRoute {
+            resyncToNearestInstruction(from: location)
+        }
+
+        wasOffRoute = nowOffRoute
+        DispatchQueue.main.async { self.isOffRoute = nowOffRoute }
+
+        // If still off-route, don't try to advance instructions
+        if nowOffRoute { return }
 
         // --- 2. Advance instruction index if close enough to the manoeuvre point ---
         let nextIndex = currentInstructionIndex + 1
@@ -131,6 +145,59 @@ class NavigationEngine: ObservableObject {
                 let d = location.distance(from: endLocation)
                 DispatchQueue.main.async { self.distanceToNextM = d }
             }
+        }
+    }
+
+    // MARK: - Route re-sync
+
+    /// Called the moment the rider returns to within the off-route threshold.
+    ///
+    /// Finds the nearest route coordinate to the current position, then walks
+    /// forward through the instruction list to find the first upcoming instruction
+    /// whose point index is at or ahead of that nearest coordinate. This ensures
+    /// the engine never shows a manoeuvre the rider has already physically passed.
+    private func resyncToNearestInstruction(from location: CLLocation) {
+        guard !routeCoordinates.isEmpty, !route.instructions.isEmpty else { return }
+
+        // Find the index of the nearest coordinate on the route polyline
+        var nearestIndex = 0
+        var nearestDist  = Double.greatestFiniteMagnitude
+        for (i, coord) in routeCoordinates.enumerated() {
+            let d = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+                        .distance(from: location)
+            if d < nearestDist {
+                nearestDist  = d
+                nearestIndex = i
+            }
+        }
+
+        // Walk forward through instructions to find the first one whose point
+        // index is at or ahead of the nearest coordinate index
+        let instructions = route.instructions
+        var newInstructionIndex = currentInstructionIndex
+
+        for i in (currentInstructionIndex + 1)..<instructions.count {
+            if instructions[i].pointIndex <= nearestIndex {
+                newInstructionIndex = i
+            } else {
+                break
+            }
+        }
+
+        // Only update if we've moved forward (never go backwards)
+        if newInstructionIndex > currentInstructionIndex {
+            currentInstructionIndex = newInstructionIndex
+            prepareCueFired         = false
+            let instruction         = instructions[newInstructionIndex]
+
+            DispatchQueue.main.async {
+                self.currentInstruction = instruction
+            }
+
+            speak("Back on route. \(instruction.text)")
+        } else {
+            // Same instruction — just announce we're back
+            speak("Back on route.")
         }
     }
 
