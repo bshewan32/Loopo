@@ -34,7 +34,6 @@ class NavigationEngine: ObservableObject {
     // MARK: - Approach mode (NDB arrow)
 
     /// True when the rider is within the on-route threshold and turn-by-turn is active.
-    /// False when the rider is still approaching the loop from outside.
     @Published var isOnLoop: Bool = false
 
     /// Distance in metres to the nearest point on the loop polyline.
@@ -45,7 +44,6 @@ class NavigationEngine: ObservableObject {
     @Published var bearingToLoopDeg: Double = 0
 
     /// The nearest coordinate on the loop polyline to the rider's current position.
-    /// Used by the map to optionally draw a line from the user to the loop.
     @Published var nearestLoopCoordinate: CLLocationCoordinate2D?
 
     // MARK: - Private state
@@ -54,24 +52,40 @@ class NavigationEngine: ObservableObject {
     private let routeCoordinates: [CLLocationCoordinate2D]
     private var currentInstructionIndex: Int = 0
 
+    // ── Timing thresholds ──────────────────────────────────────────────────
+    // These are tuned for cycling speeds (20–35 km/h).
+    // At 25 km/h:  60 m advance threshold = ~8.6 s warning
+    //              300 m prepare threshold = ~43 s "prepare" audio cue
+    //
+    // The previous values (40 m / 200 m) were fine on foot but felt late
+    // at cycling speed. Increasing both gives the rider more reaction time.
+
     /// Distance threshold (metres) at which we advance to the next instruction.
-    private let advanceThresholdM: Double = 40
+    private let advanceThresholdM: Double = 60
 
     /// Distance threshold (metres) at which we give the "prepare to turn" audio cue.
-    private let prepareThresholdM: Double = 200
+    private let prepareThresholdM: Double = 300
 
     /// Whether the "prepare" cue for the current instruction has already been spoken.
     private var prepareCueFired: Bool = false
 
     /// Distance threshold (metres) within which the rider is considered on the loop.
-    /// Below this: turn-by-turn active. Above this: NDB approach arrow shown.
     private let onLoopThresholdM: Double = 80
 
-    /// Tracks whether we were off-route on the previous update, so we can detect the moment of re-join.
+    /// Tracks whether we were off-route on the previous update.
     private var wasOffRoute: Bool = false
 
     /// Tracks whether we were approaching (not on loop) on the previous update.
     private var wasApproaching: Bool = true
+
+    // ── GPS smoothing ──────────────────────────────────────────────────────
+    // Raw GPS can jump 10–20 m between fixes, causing jittery distance readings.
+    // We apply a simple exponential moving average to smooth the distance value
+    // shown in the banner. The underlying advance logic still uses raw distance
+    // so it doesn't introduce artificial lag.
+
+    private var smoothedDistanceToNextM: Double = 0
+    private let smoothingFactor: Double = 0.25   // 0 = no smoothing, 1 = instant
 
     private let speechSynthesiser = AVSpeechSynthesizer()
 
@@ -80,7 +94,6 @@ class NavigationEngine: ObservableObject {
     init(route: GeneratedRoute) {
         self.route = route
 
-        // Extract all coordinates from the route polyline once
         var coords = [CLLocationCoordinate2D](
             repeating: CLLocationCoordinate2D(),
             count: route.polyline.pointCount
@@ -91,11 +104,11 @@ class NavigationEngine: ObservableObject {
         )
         self.routeCoordinates = coords
 
-        // Start in approach mode — the rider may not be on the loop yet
         self.isOnLoop = false
         self.currentInstruction = route.instructions.first
         if let first = route.instructions.first {
-            self.distanceToNextM = first.distanceToNextM
+            self.distanceToNextM      = first.distanceToNextM
+            self.smoothedDistanceToNextM = first.distanceToNextM
         }
     }
 
@@ -108,7 +121,6 @@ class NavigationEngine: ObservableObject {
         // --- 1. Find nearest loop point and update approach state ---
         let (nearestDist, nearestIndex) = nearestRoutePoint(from: location)
         let nearestCoord = routeCoordinates[safe: nearestIndex]
-
         let bearing = nearestCoord.map { bearingFrom(location.coordinate, to: $0) } ?? 0
 
         DispatchQueue.main.async {
@@ -119,7 +131,6 @@ class NavigationEngine: ObservableObject {
 
         let nowOnLoop = nearestDist <= onLoopThresholdM
 
-        // Announce the transition from approach → on-loop
         if wasApproaching && nowOnLoop {
             speak("You're on the loop. Navigation starting.")
             resyncToNearestInstruction(from: location)
@@ -128,10 +139,9 @@ class NavigationEngine: ObservableObject {
         wasApproaching = !nowOnLoop
         DispatchQueue.main.async { self.isOnLoop = nowOnLoop }
 
-        // While approaching, don't run turn-by-turn logic
         if !nowOnLoop { return }
 
-        // --- 2. Off-route detection (only relevant once on the loop) ---
+        // --- 2. Off-route detection ---
         let nowOffRoute = nearestDist > onLoopThresholdM
 
         if wasOffRoute && !nowOffRoute {
@@ -143,7 +153,7 @@ class NavigationEngine: ObservableObject {
 
         if nowOffRoute { return }
 
-        // --- 3. Advance instruction index if close enough to the manoeuvre point ---
+        // --- 3. Advance instruction index ---
         guard !route.instructions.isEmpty else { return }
         let instructions = route.instructions
         let nextIndex    = currentInstructionIndex + 1
@@ -156,27 +166,31 @@ class NavigationEngine: ObservableObject {
                 latitude:  manoeuvreCoord.latitude,
                 longitude: manoeuvreCoord.longitude
             )
-            let distToManoeuvre = location.distance(from: manoeuvreLocation)
+            let rawDist = location.distance(from: manoeuvreLocation)
 
-            DispatchQueue.main.async { self.distanceToNextM = distToManoeuvre }
+            // Smooth the displayed distance to avoid jitter in the banner
+            smoothedDistanceToNextM = smoothedDistanceToNextM * (1 - smoothingFactor)
+                                    + rawDist * smoothingFactor
 
-            // "Prepare to turn" cue at ~200 m
-            if distToManoeuvre <= prepareThresholdM && !prepareCueFired {
+            DispatchQueue.main.async { self.distanceToNextM = self.smoothedDistanceToNextM }
+
+            // "Prepare to turn" cue — use raw distance for accuracy
+            if rawDist <= prepareThresholdM && !prepareCueFired {
                 prepareCueFired = true
                 let prepareText = "In \(nextInstruction.formattedDistance), \(nextInstruction.text)"
                 speak(prepareText)
             }
 
-            // Advance when within the advance threshold
-            if distToManoeuvre <= advanceThresholdM {
-                currentInstructionIndex = nextIndex
-                prepareCueFired         = false
+            // Advance when within the advance threshold — use raw distance
+            if rawDist <= advanceThresholdM {
+                currentInstructionIndex  = nextIndex
+                prepareCueFired          = false
+                smoothedDistanceToNextM  = 0
                 speak(nextInstruction.text)
 
                 DispatchQueue.main.async {
                     self.currentInstruction = nextInstruction
 
-                    // Check for arrival (GraphHopper sign 4 = destination reached)
                     if nextInstruction.sign == 4 || nextInstruction.sign == -4 {
                         self.hasArrived = true
                         self.speak("You have arrived. Great ride!")
@@ -184,7 +198,6 @@ class NavigationEngine: ObservableObject {
                 }
             }
         } else {
-            // Already on the last instruction — update distance to route end
             if let last = routeCoordinates.last {
                 let endLocation = CLLocation(latitude: last.latitude, longitude: last.longitude)
                 let d = location.distance(from: endLocation)
@@ -211,9 +224,10 @@ class NavigationEngine: ObservableObject {
         }
 
         if newInstructionIndex > currentInstructionIndex {
-            currentInstructionIndex = newInstructionIndex
-            prepareCueFired         = false
-            let instruction         = instructions[newInstructionIndex]
+            currentInstructionIndex  = newInstructionIndex
+            prepareCueFired          = false
+            smoothedDistanceToNextM  = 0
+            let instruction          = instructions[newInstructionIndex]
             DispatchQueue.main.async { self.currentInstruction = instruction }
             speak("Back on route. \(instruction.text)")
         } else {
@@ -223,7 +237,6 @@ class NavigationEngine: ObservableObject {
 
     // MARK: - Geometry helpers
 
-    /// Returns (distance, index) of the nearest coordinate on the route polyline.
     private func nearestRoutePoint(from location: CLLocation) -> (Double, Int) {
         guard !routeCoordinates.isEmpty else { return (0, 0) }
         var nearestDist  = Double.greatestFiniteMagnitude
@@ -239,16 +252,13 @@ class NavigationEngine: ObservableObject {
         return (nearestDist, nearestIndex)
     }
 
-    /// Calculates the bearing in degrees (0–360) from `from` to `to`.
     private func bearingFrom(_ from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
         let lat1 = from.latitude  * .pi / 180
         let lat2 = to.latitude    * .pi / 180
         let dLon = (to.longitude - from.longitude) * .pi / 180
-
         let y = sin(dLon) * cos(lat2)
         let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
-        let bearing = atan2(y, x) * 180 / .pi
-        return (bearing + 360).truncatingRemainder(dividingBy: 360)
+        return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
     }
 
     // MARK: - Audio

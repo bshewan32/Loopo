@@ -11,10 +11,19 @@ import MapKit
 // MARK: - Display mode
 
 private enum DisplayMode {
-    /// Full instruction banner + stats bar visible. Map takes remaining space.
-    case navigation
-    /// Map fills the entire screen. Only a compact floating HUD is shown.
-    case fullMap
+    case navigation   // instruction banner + stats bar visible
+    case fullMap      // map fills screen, compact HUD only
+}
+
+// MARK: - Direction chevron annotation
+
+/// A lightweight annotation placed at regular intervals along the route polyline
+/// to indicate direction of travel. Each one stores the bearing of the segment
+/// so the chevron icon can be rotated to point the right way.
+struct DirectionChevron: Identifiable {
+    let id    = UUID()
+    let coord: CLLocationCoordinate2D
+    let bearing: Double   // degrees, 0 = north
 }
 
 struct NavigationRideView: View {
@@ -30,8 +39,12 @@ struct NavigationRideView: View {
     @State private var savedRide: SavedRide?
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var followsUser     = true
+    @State private var headingUp       = true     // heading-up vs north-up toggle
     @State private var displayMode: DisplayMode = .navigation
     @State private var imminentPulse   = false
+
+    /// Direction chevrons computed once from the route polyline.
+    @State private var chevrons: [DirectionChevron] = []
 
     @Environment(\.dismiss) var dismiss
 
@@ -41,25 +54,44 @@ struct NavigationRideView: View {
         _navEngine  = StateObject(wrappedValue: NavigationEngine(route: route))
     }
 
+    // MARK: - Body
+
     var body: some View {
         ZStack {
             // ── Full-screen map ──────────────────────────────────────────
             Map(position: $cameraPosition) {
+
+                // Route polyline
                 MapPolyline(route.polyline)
                     .stroke(Color("LoopGreen"), lineWidth: 4)
+
+                // Direction-of-travel chevrons
+                ForEach(chevrons) { chevron in
+                    Annotation("", coordinate: chevron.coord) {
+                        Image(systemName: "chevron.forward")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(Color("LoopGreen"))
+                            .rotationEffect(.degrees(chevron.bearing - 90))
+                            // -90° because chevron.forward points right (east = 90°)
+                            // and we want it to point in the direction of travel
+                            .shadow(color: .black.opacity(0.6), radius: 1, x: 0, y: 0)
+                    }
+                }
+
+                // User dot
                 UserAnnotation()
             }
             .ignoresSafeArea()
             .onAppear {
                 setupLocationCallback()
                 zoomToRoute()
+                chevrons = buildChevrons(from: route.polyline)
             }
             .onTapGesture {
-                // Tapping the map disables auto-follow so the user can pan freely
                 followsUser = false
             }
 
-            // ── Overlays (mode-dependent) ────────────────────────────────
+            // ── Overlays ─────────────────────────────────────────────────
             switch displayMode {
             case .navigation:
                 navigationModeOverlay
@@ -95,14 +127,10 @@ struct NavigationRideView: View {
         }
     }
 
-    // MARK: - Navigation mode overlay (default)
-    // Top: instruction banner (or NDB arrow when approaching)
-    // Bottom: stats bar + controls
+    // MARK: - Navigation mode overlay
 
     private var navigationModeOverlay: some View {
         VStack(spacing: 0) {
-
-            // Top banner — switches between NDB approach and turn-by-turn
             if navEngine.hasArrived {
                 arrivalBanner
                     .transition(.scale.combined(with: .opacity))
@@ -114,7 +142,6 @@ struct NavigationRideView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            // Off-route warning (only relevant once on the loop)
             if navEngine.isOnLoop && navEngine.isOffRoute {
                 offRouteBanner
                     .padding(.top, 6)
@@ -135,20 +162,19 @@ struct NavigationRideView: View {
     }
 
     // MARK: - Full-map mode overlay
-    // Compact floating HUD at top + minimal controls at bottom
 
     private var fullMapModeOverlay: some View {
         VStack(spacing: 0) {
-            // Compact HUD — always shows next turn info or NDB distance
             compactHUD
                 .padding(.horizontal, 12)
                 .padding(.top, 56)
 
             Spacer()
 
-            // Minimal bottom bar: re-centre + toggle + end
             HStack(spacing: 12) {
                 recentreButton
+                Spacer()
+                headingToggleButton
                 Spacer()
                 mapToggleButton
                 Spacer()
@@ -160,28 +186,18 @@ struct NavigationRideView: View {
     }
 
     // MARK: - NDB Approach Banner
-    //
-    // Shown when the rider is not yet on the loop.
-    // A large rotating arrow points toward the nearest point on the loop.
-    // The bearing is relative to the rider's current heading so the arrow
-    // acts like a compass needle — point yourself at it and ride.
 
     private var ndbApproachBanner: some View {
         HStack(alignment: .center, spacing: 0) {
-
-            // Left column — rotating NDB arrow
             ZStack {
                 Rectangle()
                     .fill(Color.blue.opacity(0.85))
                     .frame(width: 100)
-
                 VStack(spacing: 4) {
                     Image(systemName: "location.north.fill")
                         .font(.system(size: 44, weight: .black))
                         .foregroundColor(.white)
-                        // Rotate the arrow: bearing to loop minus current device heading
                         .rotationEffect(.degrees(relativeNDBBearing))
-
                     Text("TO LOOP")
                         .font(.system(size: 9, weight: .black))
                         .foregroundColor(.white.opacity(0.7))
@@ -190,18 +206,15 @@ struct NavigationRideView: View {
             }
             .frame(maxHeight: .infinity)
 
-            // Right column — distance to loop
             VStack(alignment: .leading, spacing: 4) {
                 Text(loopDistanceLabel)
                     .font(.system(size: 48, weight: .black, design: .rounded))
                     .foregroundColor(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-
                 Text("Ride toward the loop")
                     .font(.system(size: 18, weight: .bold))
                     .foregroundColor(.white.opacity(0.85))
-
                 Text("Turn-by-turn starts automatically")
                     .font(.system(size: 14))
                     .foregroundColor(.blue.opacity(0.9))
@@ -215,14 +228,10 @@ struct NavigationRideView: View {
         .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 4)
     }
 
-    /// Bearing of the loop relative to the rider's current heading.
-    /// This makes the arrow behave like a compass — it points at the loop
-    /// regardless of which direction the rider is facing.
     private var relativeNDBBearing: Double {
         let absolute   = navEngine.bearingToLoopDeg
         let deviceTrue = locationService.heading?.trueHeading ?? 0
-        let relative   = (absolute - deviceTrue + 360).truncatingRemainder(dividingBy: 360)
-        return relative
+        return (absolute - deviceTrue + 360).truncatingRemainder(dividingBy: 360)
     }
 
     private var loopDistanceLabel: String {
@@ -231,11 +240,10 @@ struct NavigationRideView: View {
         return String(format: "%.0f m", d)
     }
 
-    // MARK: - Instruction Banner (handlebar-optimised, shown when on loop)
+    // MARK: - Instruction Banner
 
     private var instructionBanner: some View {
         HStack(alignment: .center, spacing: 0) {
-
             ZStack {
                 Rectangle()
                     .fill(Color("LoopGreen"))
@@ -252,13 +260,11 @@ struct NavigationRideView: View {
                     .foregroundColor(imminentPulse ? .red : .white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-
                 Text(navEngine.currentInstruction?.text ?? "Follow the route")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(.white.opacity(0.9))
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
-
                 if let street = navEngine.currentInstruction?.streetName, !street.isEmpty {
                     Text(street)
                         .font(.system(size: 18, weight: .semibold))
@@ -286,7 +292,6 @@ struct NavigationRideView: View {
 
     private var compactHUD: some View {
         HStack(spacing: 12) {
-            // Arrow or NDB indicator
             ZStack {
                 Circle()
                     .fill(navEngine.isOnLoop ? Color("LoopGreen") : Color.blue)
@@ -320,7 +325,6 @@ struct NavigationRideView: View {
 
             Spacer()
 
-            // Stats pill
             HStack(spacing: 8) {
                 Text(String(format: "%.1f km", locationService.totalDistanceKm))
                     .font(.system(size: 13, weight: .bold))
@@ -352,10 +356,7 @@ struct NavigationRideView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color.orange.opacity(0.30))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.orange.opacity(0.7), lineWidth: 1.5)
-        )
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.7), lineWidth: 1.5))
         .cornerRadius(12)
     }
 
@@ -397,7 +398,7 @@ struct NavigationRideView: View {
         .cornerRadius(14)
     }
 
-    // MARK: - Control buttons
+    // MARK: - Control Buttons
 
     private var recentreButton: some View {
         Button {
@@ -407,6 +408,22 @@ struct NavigationRideView: View {
             Image(systemName: "location.fill")
                 .font(.system(size: 22))
                 .foregroundColor(.white)
+                .frame(width: 56, height: 56)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(28)
+        }
+    }
+
+    /// Toggles between heading-up and north-up map orientation.
+    private var headingToggleButton: some View {
+        Button {
+            headingUp.toggle()
+            // Re-centre with the new orientation
+            zoomToUserLocation()
+        } label: {
+            Image(systemName: headingUp ? "location.north.line.fill" : "arrow.up")
+                .font(.system(size: 22))
+                .foregroundColor(headingUp ? Color("LoopGreen") : .white)
                 .frame(width: 56, height: 56)
                 .background(Color.black.opacity(0.75))
                 .cornerRadius(28)
@@ -433,10 +450,8 @@ struct NavigationRideView: View {
             showEndConfirm = true
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "stop.circle.fill")
-                    .font(.system(size: 18))
-                Text("End Ride")
-                    .font(.system(size: 17, weight: .bold))
+                Image(systemName: "stop.circle.fill").font(.system(size: 18))
+                Text("End Ride").font(.system(size: 17, weight: .bold))
             }
             .foregroundColor(.white)
             .padding(.horizontal, 28)
@@ -452,6 +467,8 @@ struct NavigationRideView: View {
         HStack(spacing: 12) {
             recentreButton
             Spacer()
+            headingToggleButton
+            Spacer()
             mapToggleButton
             Spacer()
             endRideButton
@@ -461,45 +478,59 @@ struct NavigationRideView: View {
     // MARK: - Ride lifecycle
 
     private func setupLocationCallback() {
-        // Start location updates (heading already running from LocationService init)
-        manager_startIfNeeded()
+        if locationService.currentLocation == nil {
+            locationService.requestPermission()
+        }
 
         locationService.onLocationUpdate = { location in
             DispatchQueue.main.async {
-                // Feed the navigation engine
                 Task { @MainActor in
                     navEngine.update(location: location)
                 }
 
-                // Record ride track and stats only while tracking
                 if self.locationService.isTracking {
                     self.activeRide.recordedCoordinates.append(location.coordinate)
                     self.activeRide.distanceCoveredKm = self.locationService.totalDistanceKm
                     self.activeRide.currentSpeed      = location.speed > 0 ? location.speed * 3.6 : 0
                 }
 
-                // Keep map centred on user if follow mode is on
                 if self.followsUser {
-                    withAnimation {
-                        self.cameraPosition = .region(MKCoordinateRegion(
-                            center: location.coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
-                        ))
-                    }
+                    self.updateCameraForLocation(location)
                 }
             }
         }
 
-        // Start the ride tracking
         locationService.startTracking()
     }
 
-    /// Ensures location updates are running even if startTracking hasn't been called yet.
-    private func manager_startIfNeeded() {
-        // LocationService.shared already calls startUpdatingLocation on auth,
-        // but we call it again here to be safe after view appears.
-        if locationService.currentLocation == nil {
-            locationService.requestPermission()
+    /// Updates the map camera position, applying heading-up rotation when enabled.
+    ///
+    /// SwiftUI's MapKit `MapCameraPosition` does not yet expose a direct heading
+    /// property on `.region`. Instead we use `.camera` with `MapCamera` which
+    /// accepts a `heading` parameter (degrees, 0 = north).
+    private func updateCameraForLocation(_ location: CLLocation) {
+        let center = location.coordinate
+        let heading: Double
+
+        if headingUp {
+            // Prefer the GPS course (direction of movement) over the compass heading.
+            // course is -1 when unavailable (stationary), fall back to compass.
+            if location.course >= 0 {
+                heading = location.course
+            } else {
+                heading = locationService.heading?.trueHeading ?? 0
+            }
+        } else {
+            heading = 0   // north-up
+        }
+
+        withAnimation(.linear(duration: 0.2)) {
+            cameraPosition = .camera(MapCamera(
+                centerCoordinate: center,
+                distance: 500,          // ~500 m view radius — good for cycling
+                heading: heading,
+                pitch: 0
+            ))
         }
     }
 
@@ -527,14 +558,61 @@ struct NavigationRideView: View {
     }
 
     private func zoomToUserLocation() {
-        if let loc = locationService.currentLocation {
-            withAnimation {
-                cameraPosition = .region(MKCoordinateRegion(
-                    center: loc.coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
-                ))
-            }
+        guard let loc = locationService.currentLocation else { return }
+        updateCameraForLocation(loc)
+    }
+
+    // MARK: - Direction chevron builder
+
+    /// Samples the route polyline at regular intervals and computes the bearing
+    /// of each segment, returning a `DirectionChevron` for each sample point.
+    ///
+    /// Spacing is adaptive: ~every 200 m for short routes, ~every 500 m for long ones.
+    private func buildChevrons(from polyline: MKPolyline) -> [DirectionChevron] {
+        let count = polyline.pointCount
+        guard count >= 2 else { return [] }
+
+        var coords = [CLLocationCoordinate2D](repeating: .init(), count: count)
+        polyline.getCoordinates(&coords, range: NSRange(location: 0, length: count))
+
+        // Compute cumulative distances along the polyline
+        var cumDist = [Double](repeating: 0, count: count)
+        for i in 1..<count {
+            let a = CLLocation(latitude: coords[i-1].latitude, longitude: coords[i-1].longitude)
+            let b = CLLocation(latitude: coords[i].latitude,   longitude: coords[i].longitude)
+            cumDist[i] = cumDist[i-1] + a.distance(from: b)
         }
+
+        let totalDist = cumDist.last ?? 0
+        guard totalDist > 0 else { return [] }
+
+        // Place chevrons every ~300 m, but at least 4 and at most 20
+        let spacing  = max(300.0, totalDist / 20)
+        var chevrons = [DirectionChevron]()
+        var nextDist = spacing / 2   // start half a spacing in so first chevron isn't at the very start
+
+        while nextDist < totalDist - spacing / 2 {
+            // Find the coordinate at `nextDist` along the polyline
+            if let idx = cumDist.firstIndex(where: { $0 >= nextDist }), idx > 0 {
+                let coord   = coords[idx]
+                let prev    = coords[idx - 1]
+                let bearing = bearingBetween(prev, coord)
+                chevrons.append(DirectionChevron(coord: coord, bearing: bearing))
+            }
+            nextDist += spacing
+        }
+
+        return chevrons
+    }
+
+    /// Bearing in degrees (0–360) from `a` to `b`.
+    private func bearingBetween(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let lat1 = a.latitude  * .pi / 180
+        let lat2 = b.latitude  * .pi / 180
+        let dLon = (b.longitude - a.longitude) * .pi / 180
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
     }
 }
 
