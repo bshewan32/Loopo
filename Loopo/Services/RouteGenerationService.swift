@@ -35,11 +35,14 @@ class RouteGenerationService {
 
             print("🔄 Attempting route \(i + 1) with seed \(seed)...")
 
-            // Apply direction bias by offsetting the origin slightly in the
-            // requested compass direction. This is more reliable than the
-            // `heading` parameter, which is not supported by the round_trip
-            // algorithm on the GraphHopper free tier.
-            let biasedOrigin = heading.map { offsetOrigin(origin, heading: $0, distanceKm: targetDistanceKm * 0.08) }
+            // Apply direction bias by nudging the origin a fixed 400 m in the
+            // chosen compass direction. This is enough to steer GraphHopper's
+            // round_trip algorithm without moving the route start away from the
+            // user's actual position.
+            //
+            // A percentage of targetDistanceKm was used previously but caused
+            // the loop start to appear several km away on longer rides.
+            let biasedOrigin = heading.map { offsetOrigin(origin, heading: $0, distanceKm: 0.4) }
                                ?? origin
 
             do {
