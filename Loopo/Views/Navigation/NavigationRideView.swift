@@ -84,7 +84,16 @@ struct NavigationRideView: View {
             .ignoresSafeArea()
             .onAppear {
                 setupLocationCallback()
-                zoomToRoute()
+                // Zoom to user location at a comfortable cycling scale rather
+                // than fitting the full route bounds. For a 150 km route,
+                // fitting the whole polyline loads a huge tile area and makes
+                // the initial view useless. The route polyline is still visible
+                // as you ride — the re-centre button snaps back to it any time.
+                if let loc = locationService.currentLocation {
+                    updateCameraForLocation(loc)
+                } else {
+                    zoomToRoute()   // fallback if location not yet available
+                }
                 chevrons = buildChevrons(from: route.polyline)
             }
             .onTapGesture {
@@ -484,9 +493,9 @@ struct NavigationRideView: View {
 
         locationService.onLocationUpdate = { location in
             DispatchQueue.main.async {
-                Task { @MainActor in
-                    navEngine.update(location: location)
-                }
+                // navEngine.update dispatches its own geometry work to a
+                // background queue internally — no need to wrap in Task here.
+                navEngine.update(location: location)
 
                 if self.locationService.isTracking {
                     self.activeRide.recordedCoordinates.append(location.coordinate)
