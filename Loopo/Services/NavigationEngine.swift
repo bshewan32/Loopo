@@ -15,10 +15,6 @@ import AVFoundation
 
 /// Divides the route polyline into a coarse lat/lon grid so nearest-segment
 /// lookups are O(1) rather than O(n) over the full coordinate list.
-///
-/// For a 150 km route with ~5 000 coordinates, a brute-force scan on every
-/// GPS fix (1 Hz) would do 5 000 distance calculations per second on the main
-/// thread. The grid reduces that to ~20–50 candidates per lookup.
 private struct SpatialGrid {
 
     struct Cell: Hashable {
@@ -26,22 +22,16 @@ private struct SpatialGrid {
         let col: Int
     }
 
-    /// Each segment is stored by its start-point index into `coords`.
     private var buckets: [Cell: [Int]] = [:]
     private let coords: [CLLocationCoordinate2D]
-    private let cellSizeDeg: Double   // degrees per cell (~1 km at mid-latitudes)
+    private let cellSizeDeg: Double
 
     init(coords: [CLLocationCoordinate2D], cellSizeDeg: Double = 0.01) {
         self.coords      = coords
         self.cellSizeDeg = cellSizeDeg
-
-        // Index every segment by both its start and end cell so segments that
-        // straddle a cell boundary are still found.
         for i in 0..<(coords.count - 1) {
             let cells = Set([cell(for: coords[i]), cell(for: coords[i + 1])])
-            for c in cells {
-                buckets[c, default: []].append(i)
-            }
+            for c in cells { buckets[c, default: []].append(i) }
         }
     }
 
@@ -52,75 +42,45 @@ private struct SpatialGrid {
         )
     }
 
-    /// Returns the index of the segment start-point whose segment is nearest
-    /// to `location`, and the perpendicular distance to that segment in metres.
     func nearestSegment(to location: CLLocation) -> (segmentIndex: Int, distanceM: Double, closestPoint: CLLocationCoordinate2D) {
         let c = cell(for: location.coordinate)
-
-        // Search the cell and its 8 neighbours
         var candidates = Set<Int>()
         for dr in -1...1 {
             for dc in -1...1 {
-                let neighbour = Cell(row: c.row + dr, col: c.col + dc)
-                if let segs = buckets[neighbour] {
+                if let segs = buckets[Cell(row: c.row + dr, col: c.col + dc)] {
                     candidates.formUnion(segs)
                 }
             }
         }
-
-        // If no candidates found in nearby cells, fall back to a broader search
-        // (handles sparse routes or large cell gaps)
-        if candidates.isEmpty {
-            candidates = Set(0..<(coords.count - 1))
-        }
+        if candidates.isEmpty { candidates = Set(0..<(coords.count - 1)) }
 
         var bestDist  = Double.greatestFiniteMagnitude
         var bestIndex = 0
         var bestPoint = coords[0]
 
         for i in candidates {
-            let (dist, pt) = distanceToSegment(
-                point:  location.coordinate,
-                segA:   coords[i],
-                segB:   coords[i + 1]
-            )
-            if dist < bestDist {
-                bestDist  = dist
-                bestIndex = i
-                bestPoint = pt
-            }
+            let (dist, pt) = distanceToSegment(point: location.coordinate, segA: coords[i], segB: coords[i + 1])
+            if dist < bestDist { bestDist = dist; bestIndex = i; bestPoint = pt }
         }
-
         return (bestIndex, bestDist, bestPoint)
     }
 
-    /// Perpendicular distance (metres) from `point` to segment [segA, segB],
-    /// clamped so the foot-of-perpendicular stays within the segment.
     private func distanceToSegment(
         point: CLLocationCoordinate2D,
         segA:  CLLocationCoordinate2D,
         segB:  CLLocationCoordinate2D
     ) -> (Double, CLLocationCoordinate2D) {
-
-        // Work in a local flat-earth projection (accurate to <0.1% within 100 km)
         let cosLat = cos(segA.latitude * .pi / 180)
-        let ax = segA.longitude * cosLat,  ay = segA.latitude
-        let bx = segB.longitude * cosLat,  by = segB.latitude
+        let ax = segA.longitude * cosLat, ay = segA.latitude
+        let bx = segB.longitude * cosLat, by = segB.latitude
         let px = point.longitude * cosLat, py = point.latitude
-
         let dx = bx - ax, dy = by - ay
         let lenSq = dx * dx + dy * dy
-
         var t = 0.0
-        if lenSq > 0 {
-            t = ((px - ax) * dx + (py - ay) * dy) / lenSq
-            t = max(0, min(1, t))
-        }
-
+        if lenSq > 0 { t = max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq)) }
         let closestLon = (ax + t * dx) / cosLat
         let closestLat =  ay + t * dy
         let closest    = CLLocationCoordinate2D(latitude: closestLat, longitude: closestLon)
-
         let dist = CLLocation(latitude: point.latitude, longitude: point.longitude)
                        .distance(from: CLLocation(latitude: closestLat, longitude: closestLon))
         return (dist, closest)
@@ -129,10 +89,6 @@ private struct SpatialGrid {
 
 // MARK: - Navigation Engine
 
-/// Drives turn-by-turn navigation for an active ride.
-///
-/// All heavy geometry work runs on a background actor so the main thread
-/// (and therefore the map camera) is never blocked.
 class NavigationEngine: ObservableObject {
 
     // MARK: - Published state
@@ -141,6 +97,10 @@ class NavigationEngine: ObservableObject {
     @Published var distanceToNextM: Double = 0
     @Published var isOffRoute: Bool = false
     @Published var hasArrived: Bool = false
+
+    /// True once direction has been determined and chevrons should be flipped.
+    /// The view observes this to reverse its chevron bearing offsets.
+    @Published var travellingReversed: Bool = false
 
     // Approach / NDB mode
     @Published var isOnLoop: Bool = false
@@ -154,23 +114,46 @@ class NavigationEngine: ObservableObject {
     private let routeCoordinates: [CLLocationCoordinate2D]
     private let grid: SpatialGrid
     private var currentInstructionIndex: Int = 0
+    private var activeInstructions: [RouteInstruction]   // may be reversed
 
-    // Thresholds tuned for cycling (20–35 km/h)
-    private let advanceThresholdM: Double  = 60    // advance to next instruction
-    private let prepareThresholdM: Double  = 300   // "prepare to turn" audio cue
-    private let onLoopThresholdM: Double   = 100   // consider rider "on the loop"
-                                                    // raised from 80m → 100m to
-                                                    // tolerate parallel paths/sidewalks
+    // Thresholds
+    private let advanceThresholdM: Double  = 60
+    private let prepareThresholdM: Double  = 300
+    private let onLoopThresholdM: Double   = 100
 
-    private var prepareCueFired: Bool = false
-    private var wasOffRoute: Bool     = false
-    private var wasApproaching: Bool  = true
+    private var prepareCueFired: Bool  = false
+    private var wasOffRoute: Bool      = false
+    private var wasApproaching: Bool   = true
 
-    // GPS smoothing for the displayed distance value
+    // GPS smoothing
     private var smoothedDistanceToNextM: Double = 0
     private let smoothingFactor: Double = 0.25
 
+    // ── Direction detection ────────────────────────────────────────────────
+    // We observe the first few GPS fixes after joining the loop and compare
+    // the rider's course against the bearing of the nearest route segment.
+    // If they're going the opposite way (angle difference > 120°) we reverse
+    // the instruction list and signal the view to flip the chevrons.
+
+    private var directionDetected: Bool    = false
+    private var directionSampleCount: Int  = 0
+    private let directionSamplesNeeded: Int = 3   // fixes to average before deciding
+    private var directionAngleSum: Double  = 0
+
+    // ── Arrival guard ─────────────────────────────────────────────────────
+    // Arrival is only triggered when the rider has covered at least this
+    // fraction of the route distance. Prevents false arrival at ride start
+    // when the loop end coordinate is near the start coordinate.
+    private let minArrivalFraction: Double = 0.80
+    private var distanceCoveredKm: Double  = 0
+    private var lastLocation: CLLocation?
+
+    // ── Audio ─────────────────────────────────────────────────────────────
     private let speechSynthesiser = AVSpeechSynthesizer()
+    /// Pending speech text; the audio timer fires it after a short debounce
+    /// to avoid rapid-fire calls from consecutive GPS fixes.
+    private var pendingSpeech: String?
+    private var speechDebounceTimer: DispatchSourceTimer?
 
     // Background queue for geometry work
     private let geometryQueue = DispatchQueue(label: "com.loopo.navigation.geometry", qos: .userInteractive)
@@ -184,12 +167,23 @@ class NavigationEngine: ObservableObject {
             repeating: CLLocationCoordinate2D(),
             count: route.polyline.pointCount
         )
-        route.polyline.getCoordinates(
-            &coords,
-            range: NSRange(location: 0, length: route.polyline.pointCount)
-        )
+        route.polyline.getCoordinates(&coords, range: NSRange(location: 0, length: route.polyline.pointCount))
         self.routeCoordinates = coords
-        self.grid = SpatialGrid(coords: coords)
+        self.grid             = SpatialGrid(coords: coords)
+        self.activeInstructions = route.instructions
+
+        // Configure audio session so speech works even when the phone is on silent
+        // and doesn't interrupt music/podcasts (uses ducking instead).
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .voicePrompt,
+                options: [.duckOthers, .allowBluetooth]
+            )
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("⚠️ AVAudioSession setup failed: \(error.localizedDescription)")
+        }
 
         self.currentInstruction = route.instructions.first
         if let first = route.instructions.first {
@@ -198,13 +192,10 @@ class NavigationEngine: ObservableObject {
         }
     }
 
-    // MARK: - Public update (called on every GPS fix)
+    // MARK: - Public update
 
     func update(location: CLLocation) {
         guard !hasArrived else { return }
-
-        // All geometry runs on the background queue; only @Published writes
-        // are dispatched back to the main thread.
         geometryQueue.async { [weak self] in
             self?.processLocation(location)
         }
@@ -214,8 +205,14 @@ class NavigationEngine: ObservableObject {
 
     private func processLocation(_ location: CLLocation) {
 
-        // ── 1. Find nearest segment using the spatial grid ────────────────
-        let (_, nearestDist, nearestPt) = grid.nearestSegment(to: location)
+        // Track distance covered for arrival guard
+        if let last = lastLocation {
+            distanceCoveredKm += last.distance(from: location) / 1000.0
+        }
+        lastLocation = location
+
+        // ── 1. Nearest segment ───────────────────────────────────────────
+        let (nearestSegIdx, nearestDist, nearestPt) = grid.nearestSegment(to: location)
         let bearing = bearingFrom(location.coordinate, to: nearestPt)
 
         DispatchQueue.main.async { [weak self] in
@@ -228,18 +225,21 @@ class NavigationEngine: ObservableObject {
 
         if wasApproaching && nowOnLoop {
             speak("You're on the loop. Navigation starting.")
-            resyncToNearestInstruction(from: location)
+            // Direction detection starts now; don't resync until we know direction
         }
         wasApproaching = !nowOnLoop
         DispatchQueue.main.async { [weak self] in self?.isOnLoop = nowOnLoop }
         guard nowOnLoop else { return }
 
-        // ── 2. Off-route detection (segment-based, tolerates sidewalks) ───
-        // Using segment distance means a rider on a parallel path 30 m away
-        // from the route line is correctly considered on-route, even if the
-        // nearest *coordinate point* is 80+ m away.
-        let nowOffRoute = nearestDist > onLoopThresholdM
+        // ── 2. Direction detection (first few fixes after joining loop) ───
+        if !directionDetected {
+            detectDirection(location: location, nearestSegIdx: nearestSegIdx)
+            // Don't process instructions until direction is known
+            if !directionDetected { return }
+        }
 
+        // ── 3. Off-route detection ───────────────────────────────────────
+        let nowOffRoute = nearestDist > onLoopThresholdM
         if wasOffRoute && !nowOffRoute {
             resyncToNearestInstruction(from: location)
         }
@@ -247,12 +247,11 @@ class NavigationEngine: ObservableObject {
         DispatchQueue.main.async { [weak self] in self?.isOffRoute = nowOffRoute }
         guard !nowOffRoute else { return }
 
-        // ── 3. Instruction advancement ────────────────────────────────────
-        let instructions = route.instructions
+        // ── 4. Instruction advancement ───────────────────────────────────
+        let instructions = activeInstructions
         guard !instructions.isEmpty else { return }
         let nextIndex = currentInstructionIndex + 1
         guard nextIndex < instructions.count else {
-            // Past last instruction — show distance to route end
             if let last = routeCoordinates.last {
                 let d = location.distance(from: CLLocation(latitude: last.latitude, longitude: last.longitude))
                 DispatchQueue.main.async { [weak self] in self?.distanceToNextM = d }
@@ -268,20 +267,15 @@ class NavigationEngine: ObservableObject {
             longitude: manoeuvreCoord.longitude
         ))
 
-        // Smooth the displayed distance (eliminates GPS jitter in the banner)
         smoothedDistanceToNextM = smoothedDistanceToNextM * (1 - smoothingFactor)
                                 + rawDist * smoothingFactor
-        let displayDist = smoothedDistanceToNextM
+        DispatchQueue.main.async { [weak self] in self?.distanceToNextM = self?.smoothedDistanceToNextM ?? rawDist }
 
-        DispatchQueue.main.async { [weak self] in self?.distanceToNextM = displayDist }
-
-        // "Prepare" audio cue (use raw distance for accuracy)
         if rawDist <= prepareThresholdM && !prepareCueFired {
             prepareCueFired = true
             speak("In \(nextInstruction.formattedDistance), \(nextInstruction.text)")
         }
 
-        // Advance instruction
         if rawDist <= advanceThresholdM {
             currentInstructionIndex  = nextIndex
             prepareCueFired          = false
@@ -289,30 +283,84 @@ class NavigationEngine: ObservableObject {
             speak(nextInstruction.text)
 
             DispatchQueue.main.async { [weak self] in
-                self?.currentInstruction = nextInstruction
-                if nextInstruction.sign == 4 || nextInstruction.sign == -4 {
-                    self?.hasArrived = true
-                    self?.speak("You have arrived. Great ride!")
+                guard let self else { return }
+                self.currentInstruction = nextInstruction
+
+                // ── Arrival guard ─────────────────────────────────────────
+                // Only trigger arrival if the rider has covered ≥80% of the
+                // route distance. This prevents false arrival at ride start
+                // when the loop end coordinate is near the start coordinate.
+                let isArriveSign = nextInstruction.sign == 4 || nextInstruction.sign == -4
+                let coveredEnough = self.distanceCoveredKm >= self.route.distanceKm * self.minArrivalFraction
+                if isArriveSign && coveredEnough {
+                    self.hasArrived = true
+                    self.speak("You have arrived. Great ride!")
                 }
             }
+        }
+    }
+
+    // MARK: - Direction detection
+
+    /// Accumulates GPS course readings for the first few fixes after joining
+    /// the loop. Once enough samples are collected, compares the average course
+    /// against the bearing of the nearest route segment. If the rider is going
+    /// the wrong way (angle difference > 120°), reverses the instruction list
+    /// and signals the view to flip the chevron arrows.
+    private func detectDirection(location: CLLocation, nearestSegIdx: Int) {
+        // We need a valid GPS course (not -1, which means stationary)
+        guard location.course >= 0 else { return }
+
+        directionAngleSum  += location.course
+        directionSampleCount += 1
+
+        guard directionSampleCount >= directionSamplesNeeded else { return }
+
+        // Average course over the sample window
+        let avgCourse = directionAngleSum / Double(directionSampleCount)
+
+        // Bearing of the nearest route segment in the forward direction
+        let segCoords = routeCoordinates
+        let segBearing: Double
+        if nearestSegIdx + 1 < segCoords.count {
+            segBearing = bearingFrom(segCoords[nearestSegIdx], to: segCoords[nearestSegIdx + 1])
+        } else {
+            segBearing = bearingFrom(segCoords[nearestSegIdx - 1], to: segCoords[nearestSegIdx])
+        }
+
+        // Angular difference (0–180°)
+        var diff = abs(avgCourse - segBearing)
+        if diff > 180 { diff = 360 - diff }
+
+        let isReversed = diff > 120   // rider is going opposite to the route direction
+
+        directionDetected = true
+
+        if isReversed {
+            // Reverse the instruction list so turn-by-turn matches the actual
+            // direction of travel. The chevron bearing offset is handled in the view.
+            activeInstructions = route.instructions.reversed()
+            currentInstructionIndex = 0
+            DispatchQueue.main.async { [weak self] in
+                self?.travellingReversed = true
+                self?.currentInstruction = self?.activeInstructions.first
+            }
+            speak("Travelling in reverse direction. Instructions updated.")
+        } else {
+            resyncToNearestInstruction(from: location)
         }
     }
 
     // MARK: - Route re-sync
 
     private func resyncToNearestInstruction(from location: CLLocation) {
-        guard !routeCoordinates.isEmpty, !route.instructions.isEmpty else { return }
-
+        guard !routeCoordinates.isEmpty, !activeInstructions.isEmpty else { return }
         let (nearestSegIdx, _, _) = grid.nearestSegment(to: location)
-        let instructions          = route.instructions
+        let instructions          = activeInstructions
         var newIndex              = currentInstructionIndex
 
         for i in (currentInstructionIndex + 1)..<instructions.count {
-            if instructions[i].pointIndex <= nearestSegIdx {
-                newIndex = i
-            } else {
-                break
-            }
+            if instructions[i].pointIndex <= nearestSegIdx { newIndex = i } else { break }
         }
 
         if newIndex > currentInstructionIndex {
@@ -338,12 +386,21 @@ class NavigationEngine: ObservableObject {
         return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
     }
 
-    // MARK: - Audio
+    // MARK: - Audio (debounced to prevent rapid-fire calls)
 
     func speak(_ text: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.speechSynthesiser.stopSpeaking(at: .immediate)
+        // Cancel any pending speech and schedule new text after a short debounce.
+        // This prevents multiple consecutive GPS fixes from queueing up speech
+        // that arrives out of order or cuts off mid-sentence.
+        speechDebounceTimer?.cancel()
+        pendingSpeech = text
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(150))
+        timer.setEventHandler { [weak self] in
+            guard let self, let text = self.pendingSpeech else { return }
+            self.pendingSpeech = nil
+            self.speechSynthesiser.stopSpeaking(at: .word)   // finish current word, then stop
             let utterance             = AVSpeechUtterance(string: text)
             utterance.voice           = AVSpeechSynthesisVoice(language: "en-AU")
             utterance.rate            = 0.52
@@ -351,6 +408,8 @@ class NavigationEngine: ObservableObject {
             utterance.volume          = 1.0
             self.speechSynthesiser.speak(utterance)
         }
+        timer.resume()
+        speechDebounceTimer = timer
     }
 }
 

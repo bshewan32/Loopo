@@ -66,14 +66,17 @@ struct NavigationRideView: View {
                     .stroke(Color("LoopGreen"), lineWidth: 4)
 
                 // Direction-of-travel chevrons
+                // When the engine detects the rider is going the opposite way
+                // around the loop, travellingReversed flips the bearing by 180°
+                // so the arrows always show the actual direction of travel.
                 ForEach(chevrons) { chevron in
                     Annotation("", coordinate: chevron.coord) {
                         Image(systemName: "chevron.forward")
                             .font(.system(size: 11, weight: .black))
                             .foregroundColor(Color("LoopGreen"))
-                            .rotationEffect(.degrees(chevron.bearing - 90))
-                            // -90° because chevron.forward points right (east = 90°)
-                            // and we want it to point in the direction of travel
+                            .rotationEffect(.degrees(
+                                chevron.bearing - 90 + (navEngine.travellingReversed ? 180 : 0)
+                            ))
                             .shadow(color: .black.opacity(0.6), radius: 1, x: 0, y: 0)
                     }
                 }
