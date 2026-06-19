@@ -178,7 +178,7 @@ class NavigationEngine: ObservableObject {
             try AVAudioSession.sharedInstance().setCategory(
                 .playback,
                 mode: .voicePrompt,
-                options: [.duckOthers, .allowBluetooth]
+                options: [.duckOthers, .allowBluetoothHFP]
             )
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {

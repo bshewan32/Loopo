@@ -117,7 +117,7 @@ struct NavigationRideView: View {
         .animation(.easeInOut(duration: 0.3), value: navEngine.hasArrived)
         .animation(.easeInOut(duration: 0.3), value: navEngine.isOnLoop)
         .animation(.easeInOut(duration: 0.3), value: displayMode == .navigation)
-        .onChange(of: navEngine.distanceToNextM) { dist in
+        .onChange(of: navEngine.distanceToNextM) { _, dist in
             let shouldPulse = dist <= 50 && dist > 0
             if shouldPulse != imminentPulse {
                 withAnimation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true)) {
