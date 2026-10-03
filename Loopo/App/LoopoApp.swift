@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct LoopoApp: App {
+struct iLoopApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var locationService = LocationService.shared
     

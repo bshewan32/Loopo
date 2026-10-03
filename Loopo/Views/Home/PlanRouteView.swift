@@ -75,7 +75,7 @@ struct PlanRouteView: View {
     private var headerSection: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("LOOPO")
+                Text("iLoop")
                     .font(.system(size: 32, weight: .black, design: .rounded))
                     .foregroundColor(.white)
                     .tracking(4)
@@ -353,4 +353,3 @@ struct StatPill: View {
         .cornerRadius(6)
     }
 }
-

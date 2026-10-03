@@ -120,10 +120,13 @@ class NavigationEngine: ObservableObject {
     private let advanceThresholdM: Double  = 60
     private let prepareThresholdM: Double  = 300
     private let onLoopThresholdM: Double   = 100
+    /// Joining and staying on the loop need different corridors; otherwise an
+    /// off-route state can never be reached after the rider joins.
+    private let offRouteThresholdM: Double = 80
 
     private var prepareCueFired: Bool  = false
     private var wasOffRoute: Bool      = false
-    private var wasApproaching: Bool   = true
+    private var hasJoinedLoop: Bool    = false
 
     // GPS smoothing
     private var smoothedDistanceToNextM: Double = 0
@@ -156,7 +159,7 @@ class NavigationEngine: ObservableObject {
     private var speechDebounceTimer: DispatchSourceTimer?
 
     // Background queue for geometry work
-    private let geometryQueue = DispatchQueue(label: "com.loopo.navigation.geometry", qos: .userInteractive)
+    private let geometryQueue = DispatchQueue(label: "com.iloop.navigation.geometry", qos: .userInteractive)
 
     // MARK: - Init
 
@@ -223,13 +226,15 @@ class NavigationEngine: ObservableObject {
 
         let nowOnLoop = nearestDist <= onLoopThresholdM
 
-        if wasApproaching && nowOnLoop {
+        if !hasJoinedLoop && nowOnLoop {
+            hasJoinedLoop = true
             speak("You're on the loop. Navigation starting.")
             // Direction detection starts now; don't resync until we know direction
         }
-        wasApproaching = !nowOnLoop
-        DispatchQueue.main.async { [weak self] in self?.isOnLoop = nowOnLoop }
-        guard nowOnLoop else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.isOnLoop = self?.hasJoinedLoop == true
+        }
+        guard hasJoinedLoop else { return }
 
         // ── 2. Direction detection (first few fixes after joining loop) ───
         if !directionDetected {
@@ -239,7 +244,7 @@ class NavigationEngine: ObservableObject {
         }
 
         // ── 3. Off-route detection ───────────────────────────────────────
-        let nowOffRoute = nearestDist > onLoopThresholdM
+        let nowOffRoute = nearestDist > offRouteThresholdM
         if wasOffRoute && !nowOffRoute {
             resyncToNearestInstruction(from: location)
         }
@@ -389,6 +394,14 @@ class NavigationEngine: ObservableObject {
     // MARK: - Audio (debounced to prevent rapid-fire calls)
 
     func speak(_ text: String) {
+        // Location processing runs on geometryQueue, but AVSpeechSynthesizer
+        // and the pending-speech state are main-thread owned.
+        DispatchQueue.main.async { [weak self] in
+            self?.enqueueSpeech(text)
+        }
+    }
+
+    private func enqueueSpeech(_ text: String) {
         // Cancel any pending speech and schedule new text after a short debounce.
         // This prevents multiple consecutive GPS fixes from queueing up speech
         // that arrives out of order or cuts off mid-sentence.

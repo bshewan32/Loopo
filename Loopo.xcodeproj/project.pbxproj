@@ -203,7 +203,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -261,7 +261,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -283,8 +283,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Loopo/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = " \"Loopo uses your location in the background to track your full ride route.\"";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "\"Loopo needs your location to track your ride and generate routes from your position.\"";
+				INFOPLIST_KEY_CFBundleDisplayName = iLoop;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = " \"iLoop uses your location in the background to track your full ride route.\"";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "\"iLoop needs your location to track your ride and generate routes from your position.\"";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -319,8 +320,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Loopo/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = " \"Loopo uses your location in the background to track your full ride route.\"";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "\"Loopo needs your location to track your ride and generate routes from your position.\"";
+				INFOPLIST_KEY_CFBundleDisplayName = iLoop;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = " \"iLoop uses your location in the background to track your full ride route.\"";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "\"iLoop needs your location to track your ride and generate routes from your position.\"";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
