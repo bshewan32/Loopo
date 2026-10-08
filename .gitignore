@@ -1,0 +1,8 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Node dependencies and logs
+routing-proxy/node_modules/
+routing-proxy/npm-debug.log*

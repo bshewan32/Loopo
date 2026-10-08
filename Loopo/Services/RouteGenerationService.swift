@@ -13,9 +13,9 @@ class RouteGenerationService {
 
     static let shared = RouteGenerationService()
 
-    // Get your free API key from: https://www.graphhopper.com/dashboard/
-    private let apiKey  = "3a1823c0-7379-418a-8017-df10952ce47e"
-    private let baseURL = "https://graphhopper.com/api/1/route"
+    // The GraphHopper key stays on the routing proxy, never in the iOS app.
+    // Update this URL if the Render service receives a different hostname.
+    private let proxyBaseURL = "https://iloop-routing-proxy.onrender.com"
 
     // MARK: - Public entry point
 
@@ -127,32 +127,19 @@ class RouteGenerationService {
         index: Int
     ) async throws -> GeneratedRoute? {
 
-        var urlComponents = URLComponents(string: baseURL)!
+        guard let url = URL(string: "\(proxyBaseURL)/route") else { throw URLError(.badURL) }
+        let requestBody = RouteProxyRequest(
+            latitude: origin.latitude,
+            longitude: origin.longitude,
+            targetDistanceKm: targetDistanceKm,
+            seed: seed
+        )
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(requestBody)
 
-        // All terrain profiles use the `bike` profile on the free tier.
-        // The `mtb` profile is a paid-tier feature and will return a 400/403.
-        // Terrain preference (hilly vs flat) is expressed through the scoring
-        // function which ranks returned routes by climb-per-km against the
-        // target terrain band.
-        let profile = "bike"
-
-        let queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "point",               value: "\(origin.latitude),\(origin.longitude)"),
-            URLQueryItem(name: "profile",             value: profile),
-            URLQueryItem(name: "algorithm",           value: "round_trip"),
-            URLQueryItem(name: "round_trip.distance", value: "\(Int(targetDistanceKm * 1000))"),
-            URLQueryItem(name: "round_trip.seed",     value: "\(seed)"),
-            URLQueryItem(name: "elevation",           value: "true"),
-            URLQueryItem(name: "instructions",        value: "true"),
-            URLQueryItem(name: "locale",              value: "en"),
-            URLQueryItem(name: "key",                 value: apiKey),
-        ]
-
-        urlComponents.queryItems = queryItems
-
-        guard let url = urlComponents.url else { throw URLError(.badURL) }
-
-        let (data, response) = try await URLSession.shared.data(for: URLRequest(url: url))
+        let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
@@ -163,8 +150,8 @@ class RouteGenerationService {
         if httpResponse.statusCode != 200 {
             let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
             print("❌ GraphHopper API Error (\(httpResponse.statusCode)): \(errorString)")
-            if let errorData = try? JSONDecoder().decode(GraphHopperError.self, from: data) {
-                print("❌ GraphHopper Error Message: \(errorData.message)")
+            if let errorData = try? JSONDecoder().decode(RouteProxyError.self, from: data) {
+                print("❌ Routing proxy error: \(errorData.message)")
             }
             throw URLError(.badServerResponse)
         }
@@ -272,6 +259,19 @@ class RouteGenerationService {
         }
         return coordinates
     }
+}
+
+// MARK: - Routing Proxy Contract
+
+private struct RouteProxyRequest: Codable {
+    let latitude: Double
+    let longitude: Double
+    let targetDistanceKm: Double
+    let seed: Int
+}
+
+private struct RouteProxyError: Codable {
+    let message: String
 }
 
 // MARK: - GraphHopper Codable Response Models

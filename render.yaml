@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: iloop-routing-proxy
+    runtime: node
+    rootDir: routing-proxy
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: GRAPH_HOPPER_API_KEY
+        sync: false
