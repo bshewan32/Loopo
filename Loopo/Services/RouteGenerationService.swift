@@ -15,7 +15,7 @@ class RouteGenerationService {
 
     // The GraphHopper key stays on the routing proxy, never in the iOS app.
     // Update this URL if the Render service receives a different hostname.
-    private let proxyBaseURL = "https://iloop-routing-proxy.onrender.com"
+    private let proxyBaseURL = "https://iloop.onrender.com"
 
     // MARK: - Public entry point
 
